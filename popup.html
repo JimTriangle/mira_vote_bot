@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Mira Vote Bot</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      width: 320px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      padding: 20px;
+    }
+    
+    h1 {
+      font-size: 18px;
+      text-align: center;
+      margin-bottom: 15px;
+      color: #00d9ff;
+      text-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
+    }
+    
+    .status {
+      text-align: center;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 15px;
+      background: rgba(255, 255, 255, 0.1);
+      color: #aaa;
+    }
+    
+    .status.running {
+      background: rgba(0, 217, 255, 0.2);
+      color: #00d9ff;
+      animation: pulse 1s infinite;
+    }
+    
+    .status.success {
+      background: rgba(76, 175, 80, 0.2);
+      color: #66bb6a;
+    }
+    
+    .status.error {
+      background: rgba(255, 107, 107, 0.2);
+      color: #ff6b6b;
+    }
+    
+    .status.waiting {
+      background: rgba(255, 193, 7, 0.2);
+      color: #ffc107;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+    
+    .timer-box {
+      text-align: center;
+      padding: 15px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 10px;
+      margin-bottom: 15px;
+    }
+    
+    .timer-label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+    
+    .timer {
+      font-size: 28px;
+      font-weight: bold;
+      font-family: 'Courier New', monospace;
+      color: #00d9ff;
+      text-shadow: 0 0 15px rgba(0, 217, 255, 0.5);
+    }
+    
+    .timer.inactive {
+      color: #555;
+      text-shadow: none;
+    }
+    
+    .config-box {
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    
+    .config-title {
+      font-size: 11px;
+      color: #00d9ff;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      font-weight: bold;
+    }
+    
+    .config-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    
+    .config-row:last-child {
+      margin-bottom: 0;
+    }
+    
+    .config-row label {
+      font-size: 12px;
+      color: #aaa;
+    }
+    
+    .config-row input[type="number"] {
+      width: 70px;
+      padding: 6px 8px;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 5px;
+      background: rgba(0,0,0,0.3);
+      color: #fff;
+      font-size: 12px;
+      text-align: center;
+    }
+    
+    .config-row input[type="text"],
+    .config-row input[type="password"] {
+      width: 150px;
+      padding: 6px 10px;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 5px;
+      background: rgba(0,0,0,0.3);
+      color: #fff;
+      font-size: 12px;
+    }
+    
+    .config-row input:focus {
+      outline: none;
+      border-color: #00d9ff;
+    }
+    
+    .btn {
+      width: 100%;
+      padding: 12px 20px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.3s ease;
+      margin-bottom: 8px;
+    }
+    
+    .btn:last-child {
+      margin-bottom: 0;
+    }
+    
+    .btn-vote {
+      background: linear-gradient(135deg, #66bb6a, #4caf50);
+      color: white;
+    }
+    
+    .btn-vote:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(76, 175, 80, 0.4);
+    }
+    
+    .btn-auto {
+      background: linear-gradient(135deg, #7c4dff, #651fff);
+      color: white;
+    }
+    
+    .btn-auto:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(124, 77, 255, 0.4);
+    }
+    
+    .btn-stop {
+      background: linear-gradient(135deg, #ff5252, #d32f2f);
+      color: white;
+    }
+    
+    .btn-stop:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(255, 82, 82, 0.4);
+    }
+    
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+    
+    .steps {
+      margin-top: 15px;
+      font-size: 9px;
+      color: #666;
+    }
+    
+    .steps div {
+      padding: 4px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .steps div:last-child {
+      border-bottom: none;
+    }
+    
+    .steps .step-num {
+      background: rgba(0, 217, 255, 0.2);
+      color: #00d9ff;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      flex-shrink: 0;
+      font-size: 8px;
+    }
+    
+    .steps .done {
+      background: rgba(76, 175, 80, 0.3);
+      color: #66bb6a;
+    }
+    
+    .steps .active {
+      background: rgba(0, 217, 255, 0.4);
+      animation: pulse 0.5s infinite;
+    }
+    
+    .info {
+      font-size: 10px;
+      color: #555;
+      text-align: center;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🗳️ Mira Vote Bot</h1>
+  
+  <div class="timer-box">
+    <div class="timer-label">Prochain vote dans</div>
+    <div id="timer" class="timer inactive">--:--:--</div>
+  </div>
+  
+  <div id="status" class="status">Prêt à voter</div>
+
+  <div class="config-box">
+    <div class="config-title">🔐 Identifiants Mira</div>
+    <div class="config-row">
+      <label>Login</label>
+      <input type="text" id="login" placeholder="Nom d'utilisateur">
+    </div>
+    <div class="config-row">
+      <label>Password</label>
+      <input type="password" id="password" placeholder="••••••••">
+    </div>
+  </div>
+  
+  <div class="config-box">
+    <div class="config-title">🌐 Serveur-Privé</div>
+    <div class="config-row">
+      <label>Username</label>
+      <input type="text" id="spUsername" placeholder="Pseudo serveur-prive">
+    </div>
+  </div>
+  
+  <div class="config-box">
+    <div class="config-title">⏱️ Timers</div>
+    <div class="config-row">
+      <label>Délai clics (ms)</label>
+      <input type="number" id="clickDelay" value="3000" min="100" max="10000" step="100">
+    </div>
+    <div class="config-row">
+      <label>Délai page (ms)</label>
+      <input type="number" id="pageDelay" value="3000" min="500" max="15000" step="500">
+    </div>
+    <div class="config-row">
+      <label>Délai popup (ms)</label>
+      <input type="number" id="popupDelay" value="2000" min="100" max="5000" step="100">
+    </div>
+    <div class="config-row">
+      <label>Intervalle (min)</label>
+      <input type="number" id="intervalMinutes" value="92" min="0" max="180" step="1">
+    </div>
+  </div>
+  
+  <button id="btnVote" class="btn btn-vote">▶️ Lancer le vote</button>
+  <button id="btnAuto" class="btn btn-auto">🔄 Activer mode auto</button>
+  <button id="btnStopBot" class="btn btn-stop" style="display:none;">⏹️ Arrêter le bot</button>
+  <button id="btnStopAuto" class="btn btn-stop" style="display:none;">🚫 Désactiver mode auto</button>
+  
+  <div class="steps">
+    <div><span id="s1" class="step-num">1</span> Login sur Mira</div>
+    <div><span id="s2" class="step-num">2</span> Page vote + clic vote-btn</div>
+    <div><span id="s3" class="step-num">3</span> Serveur-prive + username + vote</div>
+    <div><span id="s4" class="step-num">4</span> Retour Mira + verify</div>
+    <div><span id="s5" class="step-num">5</span> Nettoyage</div>
+  </div>
+  
+  <div class="info" id="intervalInfo">Intervalle configuré : 92 min</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
