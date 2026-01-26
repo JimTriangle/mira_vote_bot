@@ -8,6 +8,7 @@ const SERVEUR_PRIVE_URL = 'https://serveur-prive.net/dofus/mira/vote';
 const ALARM_NAME = 'miraVoteAlarm';
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_VOTE_RETRIES = 3; // Nombre de tentatives pour un même vote
+const MAX_TOKEN_RETRIES = 3; // Nombre de tentatives en cas d'erreur de token invalide
 
 let stopRequested = false;
 let consecutiveFailures = 0;
@@ -344,76 +345,107 @@ async function executeVoteSequence(config) {
     checkStop();
 
     // ===== ÉTAPE 1 : LOGIN SUR MIRA =====
-    updateStep(0, 'Ouverture Mira...');
-
-    const miraTab = await safeCreateTab(MIRA_INDEX_URL);
-    miraTabId = miraTab.id;
-
-    try {
-      await waitForTabLoad(miraTabId);
-    } catch (e) {
-      console.warn('Erreur waitForTabLoad initial:', e.message);
-      if (!await tabExists(miraTabId)) {
-        throw new Error('Onglet Mira fermé au chargement initial');
+    // Boucle de retry en cas d'erreur de token invalide
+    let loginSuccess = false;
+    for (let tokenRetry = 1; tokenRetry <= MAX_TOKEN_RETRIES && !loginSuccess; tokenRetry++) {
+      if (tokenRetry > 1) {
+        console.log(`Tentative de login ${tokenRetry}/${MAX_TOKEN_RETRIES} après erreur de token`);
+        updateStep(0, `Retry login (${tokenRetry}/${MAX_TOKEN_RETRIES})...`);
       }
-    }
-    await injectAutoAcceptPopups(miraTabId); // Auto-accepter les popups
-    await sleep(DELAY_CLICK);
-    checkStop();
 
-    // Cliquer sur #login-btn
-    updateStep(0, 'Clic login-btn...');
-    await clickElement(miraTabId, '#login-btn');
-    await sleep(DELAY_CLICK);
-    checkStop();
+      updateStep(0, 'Ouverture Mira...');
 
-    // Renseigner login
-    updateStep(0, 'Saisie login...');
-    await fillInput(miraTabId, '#login-username', config.login);
-    await sleep(300);
-    checkStop();
-
-    // Renseigner password
-    updateStep(0, 'Saisie password...');
-    await fillInput(miraTabId, '#login-password', config.password);
-    await sleep(300);
-    checkStop();
-
-    // Injecter l'auto-accept des popups AVANT de soumettre le formulaire
-    await injectAutoAcceptPopups(miraTabId);
-    await sleep(DELAY_POPUP); // Attendre que l'injection soit active
-
-    // Cliquer sur le bouton de connexion
-    updateStep(0, 'Connexion...');
-    await clickElement(miraTabId, '#login-form > button');
-
-    // Attendre que la popup apparaisse et soit auto-acceptée
-    // Polling pour fermer activement les popups ET réinjecter pour garantir l'auto-accept
-    updateStep(0, 'Gestion des popups...');
-    for (let i = 0; i < 6; i++) {
-      await sleep(500);
-      // Réinjecter à chaque itération pour s'assurer que le remplacement reste actif
-      if (i % 2 === 0) {
-        await injectAutoAcceptPopups(miraTabId);
+      // Si c'est un retry, on recharge la page pour obtenir un nouveau token
+      if (tokenRetry > 1 && miraTabId && await tabExists(miraTabId)) {
+        await safeUpdateTab(miraTabId, MIRA_INDEX_URL);
+      } else {
+        const miraTab = await safeCreateTab(MIRA_INDEX_URL);
+        miraTabId = miraTab.id;
       }
-      await closeActivePopups(miraTabId);
-    }
 
-    await sleep(DELAY_PAGE);
-    try {
-      await waitForTabLoad(miraTabId);
-    } catch (e) {
-      console.warn('Erreur waitForTabLoad après login:', e.message);
-      // Vérifier si l'onglet existe encore
-      const exists = await tabExists(miraTabId);
-      if (!exists) {
-        throw new Error('Onglet Mira fermé après login - popup non gérée ?');
+      try {
+        await waitForTabLoad(miraTabId);
+      } catch (e) {
+        console.warn('Erreur waitForTabLoad initial:', e.message);
+        if (!await tabExists(miraTabId)) {
+          throw new Error('Onglet Mira fermé au chargement initial');
+        }
       }
+      await injectAutoAcceptPopups(miraTabId); // Auto-accepter les popups
+      await sleep(DELAY_CLICK);
+      checkStop();
+
+      // Cliquer sur #login-btn
+      updateStep(0, 'Clic login-btn...');
+      await clickElement(miraTabId, '#login-btn');
+      await sleep(DELAY_CLICK);
+      checkStop();
+
+      // Renseigner login
+      updateStep(0, 'Saisie login...');
+      await fillInput(miraTabId, '#login-username', config.login);
+      await sleep(300);
+      checkStop();
+
+      // Renseigner password
+      updateStep(0, 'Saisie password...');
+      await fillInput(miraTabId, '#login-password', config.password);
+      await sleep(300);
+      checkStop();
+
+      // Injecter l'auto-accept des popups AVANT de soumettre le formulaire
+      await injectAutoAcceptPopups(miraTabId);
+      await sleep(DELAY_POPUP); // Attendre que l'injection soit active
+
+      // Cliquer sur le bouton de connexion
+      updateStep(0, 'Connexion...');
+      await clickElement(miraTabId, '#login-form > button');
+
+      // Attendre que la popup apparaisse et soit auto-acceptée
+      // Polling pour fermer activement les popups ET réinjecter pour garantir l'auto-accept
+      updateStep(0, 'Gestion des popups...');
+      for (let i = 0; i < 6; i++) {
+        await sleep(500);
+        // Réinjecter à chaque itération pour s'assurer que le remplacement reste actif
+        if (i % 2 === 0) {
+          await injectAutoAcceptPopups(miraTabId);
+        }
+        await closeActivePopups(miraTabId);
+      }
+
+      await sleep(DELAY_PAGE);
+      try {
+        await waitForTabLoad(miraTabId);
+      } catch (e) {
+        console.warn('Erreur waitForTabLoad après login:', e.message);
+        // Vérifier si l'onglet existe encore
+        const exists = await tabExists(miraTabId);
+        if (!exists) {
+          throw new Error('Onglet Mira fermé après login - popup non gérée ?');
+        }
+      }
+      await injectAutoAcceptPopups(miraTabId); // Réinjecter après navigation
+      await closeActivePopups(miraTabId); // Fermer toutes popups restantes
+      await sleep(DELAY_CLICK);
+      checkStop();
+
+      // Vérifier si une erreur de token est présente
+      const tokenCheck = await checkForTokenError(miraTabId);
+      if (tokenCheck.hasError) {
+        console.warn(`Erreur de token détectée: ${tokenCheck.message}`);
+        if (tokenRetry < MAX_TOKEN_RETRIES) {
+          console.log('Rechargement de la page pour obtenir un nouveau token...');
+          await sleep(1000);
+          continue; // Retry la boucle
+        } else {
+          throw new Error(`Échec du login après ${MAX_TOKEN_RETRIES} tentatives: erreur de token (${tokenCheck.message})`);
+        }
+      }
+
+      // Si pas d'erreur de token, le login a réussi
+      loginSuccess = true;
+      console.log('Login réussi, pas d\'erreur de token détectée');
     }
-    await injectAutoAcceptPopups(miraTabId); // Réinjecter après navigation
-    await closeActivePopups(miraTabId); // Fermer toutes popups restantes
-    await sleep(DELAY_CLICK);
-    checkStop();
 
     // ===== ÉTAPE 2 : PAGE VOTE + CLIC VOTE-BTN =====
     updateStep(1, 'Navigation vers vote.php...');
@@ -608,6 +640,64 @@ async function safeTabOperation(tabId, operation, operationName = 'operation', r
     }
   }
   return { success: false, error: 'Max retries reached' };
+}
+
+// Vérifier si une erreur de token invalide est affichée sur la page
+async function checkForTokenError(tabId) {
+  const result = await safeTabOperation(tabId, async () => {
+    return await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        // Rechercher les messages d'erreur liés au token sur la page
+        const errorPatterns = [
+          'token invalide',
+          'invalid token',
+          'token expiré',
+          'token expired',
+          'jeton invalide',
+          'jeton expiré',
+          'csrf',
+          'session expirée',
+          'session expired'
+        ];
+
+        // Vérifier le contenu de la page
+        const pageText = document.body ? document.body.innerText.toLowerCase() : '';
+
+        for (const pattern of errorPatterns) {
+          if (pageText.includes(pattern.toLowerCase())) {
+            return { hasError: true, message: pattern };
+          }
+        }
+
+        // Vérifier aussi dans les éléments d'erreur typiques
+        const errorSelectors = [
+          '.error', '.alert-danger', '.alert-error', '.error-message',
+          '.notification-error', '.toast-error', '[class*="error"]',
+          '.warning', '.alert-warning'
+        ];
+
+        for (const selector of errorSelectors) {
+          const elements = document.querySelectorAll(selector);
+          for (const el of elements) {
+            const text = el.innerText.toLowerCase();
+            for (const pattern of errorPatterns) {
+              if (text.includes(pattern.toLowerCase())) {
+                return { hasError: true, message: pattern };
+              }
+            }
+          }
+        }
+
+        return { hasError: false };
+      }
+    });
+  }, 'checkForTokenError');
+
+  if (result.success && result.result && result.result[0]) {
+    return result.result[0].result;
+  }
+  return { hasError: false };
 }
 
 // Injecter un script pour auto-accepter les popups alert/confirm ET gérer les modals HTML
