@@ -6,6 +6,8 @@ const MIRA_VOTE_URL = 'https://mira-retro.fr/vote.php';
 const SERVEUR_PRIVE_URL = 'https://serveur-prive.net/dofus/mira/vote';
 
 const ALARM_NAME = 'miraVoteAlarm';
+const SESSION_KEEP_ALIVE_ALARM = 'miraSessionKeepAlive';
+const SESSION_REFRESH_INTERVAL = 5; // Minutes entre chaque rafraîchissement
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_VOTE_RETRIES = 3; // Nombre de tentatives pour un même vote
 const MAX_TOKEN_RETRIES = 3; // Nombre de tentatives en cas d'erreur de token invalide
@@ -13,6 +15,7 @@ const MAX_TOKEN_RETRIES = 3; // Nombre de tentatives en cas d'erreur de token in
 let stopRequested = false;
 let consecutiveFailures = 0;
 let isVoteInProgress = false; // Verrou mémoire pour éviter les lancements parallèles
+let activeSessionTabId = null; // ID de l'onglet Mira pour maintenir la session
 
 // Initialiser au démarrage
 chrome.runtime.onInstalled.addListener(() => {
@@ -32,6 +35,12 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Écouter les alarmes
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  // Alarme de maintien de session (rafraîchissement toutes les 5 min)
+  if (alarm.name === SESSION_KEEP_ALIVE_ALARM) {
+    await refreshSessionPage();
+    return;
+  }
+
   if (alarm.name === ALARM_NAME) {
     console.log('Alarme déclenchée - Lancement du vote automatique');
 
@@ -147,6 +156,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     stopRequested = true;
     isVoteInProgress = false; // Libérer le verrou
     stopAutoMode().then(async () => {
+      await stopSessionKeepAlive();
       await setRunningState(false);
       await cleanupAllTabs();
       sendResponse({ success: true });
@@ -155,7 +165,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'stopAuto') {
-    stopAutoMode().then(() => sendResponse({ success: true }));
+    stopAutoMode().then(async () => {
+      await stopSessionKeepAlive();
+      await cleanupAllTabs();
+      sendResponse({ success: true });
+    });
     return true;
   }
 
@@ -196,6 +210,178 @@ async function stopAutoMode() {
   });
   console.log('Mode automatique désactivé');
   notifyPopup('stateChanged', {});
+}
+
+// === MAINTIEN DE SESSION ===
+
+async function startSessionKeepAlive(tabId) {
+  activeSessionTabId = tabId;
+  await chrome.alarms.clear(SESSION_KEEP_ALIVE_ALARM);
+  await chrome.alarms.create(SESSION_KEEP_ALIVE_ALARM, {
+    delayInMinutes: SESSION_REFRESH_INTERVAL,
+    periodInMinutes: SESSION_REFRESH_INTERVAL
+  });
+  console.log(`Maintien de session activé - Rafraîchissement toutes les ${SESSION_REFRESH_INTERVAL} minutes`);
+}
+
+async function stopSessionKeepAlive() {
+  await chrome.alarms.clear(SESSION_KEEP_ALIVE_ALARM);
+  if (activeSessionTabId) {
+    try {
+      await chrome.tabs.remove(activeSessionTabId);
+    } catch (e) {
+      // L'onglet peut déjà être fermé
+    }
+    activeSessionTabId = null;
+  }
+  console.log('Maintien de session désactivé');
+}
+
+async function refreshSessionPage() {
+  console.log('Rafraîchissement de la page pour maintenir la session...');
+
+  // Vérifier si l'onglet existe encore
+  if (!activeSessionTabId) {
+    console.log('Pas d\'onglet de session actif, création d\'un nouvel onglet');
+    try {
+      const tab = await safeCreateTab(MIRA_INDEX_URL, false);
+      activeSessionTabId = tab.id;
+      await waitForTabLoad(activeSessionTabId);
+      await injectAutoAcceptPopups(activeSessionTabId);
+
+      // Vérifier si une connexion est requise
+      await handleLoginIfNeeded(activeSessionTabId);
+      console.log('Nouvel onglet de session créé');
+    } catch (e) {
+      console.error('Erreur création onglet session:', e);
+    }
+    return;
+  }
+
+  // Vérifier que l'onglet existe
+  const exists = await tabExists(activeSessionTabId);
+  if (!exists) {
+    console.log('Onglet de session fermé, création d\'un nouvel onglet');
+    try {
+      const tab = await safeCreateTab(MIRA_INDEX_URL, false);
+      activeSessionTabId = tab.id;
+      await waitForTabLoad(activeSessionTabId);
+      await injectAutoAcceptPopups(activeSessionTabId);
+      await handleLoginIfNeeded(activeSessionTabId);
+    } catch (e) {
+      console.error('Erreur recréation onglet session:', e);
+    }
+    return;
+  }
+
+  // Rafraîchir la page
+  try {
+    await chrome.tabs.reload(activeSessionTabId);
+    await waitForTabLoad(activeSessionTabId);
+    await injectAutoAcceptPopups(activeSessionTabId);
+
+    // Vérifier si une reconnexion est nécessaire
+    await handleLoginIfNeeded(activeSessionTabId);
+
+    console.log('Page rafraîchie avec succès');
+  } catch (e) {
+    console.error('Erreur rafraîchissement page:', e);
+    // Tenter de recréer l'onglet
+    try {
+      const tab = await safeCreateTab(MIRA_INDEX_URL, false);
+      activeSessionTabId = tab.id;
+      await waitForTabLoad(activeSessionTabId);
+      await injectAutoAcceptPopups(activeSessionTabId);
+      await handleLoginIfNeeded(activeSessionTabId);
+    } catch (e2) {
+      console.error('Erreur recréation onglet après échec refresh:', e2);
+    }
+  }
+}
+
+// Vérifier si une connexion est requise et se connecter si nécessaire
+async function handleLoginIfNeeded(tabId) {
+  const config = await chrome.storage.local.get(['login', 'password']);
+
+  if (!config.login || !config.password) {
+    console.log('Pas de credentials configurés, impossible de vérifier la connexion');
+    return false;
+  }
+
+  // Vérifier si on est connecté (présence du bouton de déconnexion ou du menu utilisateur)
+  const loginStatus = await checkLoginStatus(tabId);
+
+  if (loginStatus.isLoggedIn) {
+    console.log('Session active, pas de reconnexion nécessaire');
+    return true;
+  }
+
+  console.log('Session expirée, reconnexion en cours...');
+
+  try {
+    // Cliquer sur le bouton login
+    await clickElement(tabId, '#login-btn');
+    await sleep(1000);
+
+    // Renseigner les credentials
+    await fillInput(tabId, '#login-username', config.login);
+    await sleep(200);
+    await fillInput(tabId, '#login-password', config.password);
+    await sleep(200);
+
+    // Soumettre
+    await injectAutoAcceptPopups(tabId);
+    await clickElement(tabId, '#login-form > button');
+
+    // Attendre et gérer les popups
+    for (let i = 0; i < 4; i++) {
+      await sleep(500);
+      await closeActivePopups(tabId);
+    }
+
+    await sleep(2000);
+    console.log('Reconnexion effectuée');
+    return true;
+  } catch (e) {
+    console.error('Erreur reconnexion:', e);
+    return false;
+  }
+}
+
+// Vérifier si l'utilisateur est connecté sur la page Mira
+async function checkLoginStatus(tabId) {
+  const result = await safeTabOperation(tabId, async () => {
+    return await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        // Vérifier la présence du menu utilisateur connecté ou du bouton de déconnexion
+        const logoutBtn = document.querySelector('#user-dropdown > a.dropdown-item.logout');
+        const userMenu = document.querySelector('#login-btn .user-name, #login-btn .username, .user-avatar');
+
+        // Si on trouve un bouton de déconnexion ou un indicateur d'utilisateur connecté
+        if (logoutBtn || userMenu) {
+          return { isLoggedIn: true };
+        }
+
+        // Vérifier si le bouton login affiche "Connexion" (non connecté)
+        const loginBtn = document.querySelector('#login-btn');
+        if (loginBtn) {
+          const text = loginBtn.textContent.toLowerCase();
+          if (text.includes('connexion') || text.includes('login') || text.includes('se connecter')) {
+            return { isLoggedIn: false };
+          }
+        }
+
+        // Par défaut, supposer qu'on n'est pas connecté pour forcer la reconnexion
+        return { isLoggedIn: false };
+      }
+    });
+  }, 'checkLoginStatus');
+
+  if (result.success && result.result && result.result[0]) {
+    return result.result[0].result;
+  }
+  return { isLoggedIn: false };
 }
 
 // === GESTION DES FENÊTRES ET ONGLETS ===
@@ -556,47 +742,38 @@ async function executeVoteSequence(config) {
     await sleep(DELAY_CLICK);
     checkStop();
 
-    // ===== ÉTAPE 5 : DÉCONNEXION =====
-    updateStep(4, 'Déconnexion...');
+    // ===== ÉTAPE 5 : MAINTIEN DE SESSION =====
+    updateStep(4, 'Retour page d\'accueil...');
 
-    // Retour sur la page d'accueil de Mira
-    const updatedForLogout = await safeUpdateTab(miraTabId, MIRA_INDEX_URL);
-    if (!updatedForLogout) {
-      const newTab = await safeCreateTab(MIRA_INDEX_URL);
+    // Retour sur la page d'accueil de Mira pour maintenir la session
+    const updatedForSession = await safeUpdateTab(miraTabId, MIRA_INDEX_URL);
+    if (!updatedForSession) {
+      const newTab = await safeCreateTab(MIRA_INDEX_URL, false);
       miraTabId = newTab.id;
     }
 
     try {
       await waitForTabLoad(miraTabId);
     } catch (e) {
-      console.warn('Erreur waitForTabLoad déconnexion:', e.message);
+      console.warn('Erreur waitForTabLoad maintien session:', e.message);
       if (!await tabExists(miraTabId)) {
-        throw new Error('Onglet Mira fermé lors de la déconnexion');
+        // Recréer l'onglet si fermé
+        const newTab = await safeCreateTab(MIRA_INDEX_URL, false);
+        miraTabId = newTab.id;
+        await waitForTabLoad(miraTabId);
       }
     }
     await injectAutoAcceptPopups(miraTabId);
     await sleep(DELAY_CLICK);
-    checkStop();
 
-    // Cliquer sur #login-btn pour ouvrir le menu utilisateur
-    updateStep(4, 'Ouverture menu utilisateur...');
-    await clickElement(miraTabId, '#login-btn');
-    await sleep(DELAY_CLICK);
-    checkStop();
+    // Fermer l'onglet serveur-prive s'il reste ouvert
+    await closeTabsForDomain('serveur-prive.net');
 
-    // Cliquer sur le bouton de déconnexion
-    updateStep(4, 'Clic déconnexion...');
-    await clickElement(miraTabId, '#user-dropdown > a.dropdown-item.logout');
-    await sleep(DELAY_CLICK);
-    checkStop();
+    // Démarrer le maintien de session (rafraîchissement toutes les 5 min)
+    await startSessionKeepAlive(miraTabId);
 
-    // ===== ÉTAPE 6 : NETTOYAGE FINAL =====
-    updateStep(5, 'Nettoyage final...');
-    await cleanupAllTabs();
-    miraTabId = null;
-
-    updateStep(5, 'Vote terminé !');
-    console.log('Vote effectué avec succès!');
+    updateStep(4, 'Vote terminé !');
+    console.log('Vote effectué avec succès! Maintien de session activé.');
     return true;
 
   } catch (error) {
